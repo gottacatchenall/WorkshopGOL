@@ -1,0 +1,318 @@
+---
+title: Conway's Game of Life
+format:
+  html:
+    toc: true
+    html-math-method: katex
+---
+
+# Game of life (code in order of presentation) 
+
+## What are we building?
+
+We are implementing GOL, resulting in something like the following
+
+```{julia}
+using Plots, Distributions, DynamicGrids
+```
+
+```{julia}
+@time out = sim!(ArrayOutput(rand(Bernoulli(0.3), (100,100)), tspan=1:100), Life());
+anim = @animate for i in 1:100
+   heatmap(out[i], c=:binary, aspectratio=1) 
+end;
+gif(anim, fps=10)
+```
+
+## Starting by defining the rules of GOL
+
+**Rules**
+
+1. Any living cell with < 2 neighbors dies.
+2. Any living cell with two or three live neighours lives
+3. Any cell with > 3 neighbors dies
+4. Any dead cell with 3 neighbors becomes alive
+
+We want to design it not as a one-off simulation, by like we are **designing a software package** for GOL. 
+
+Why do this? It leads to better, more reliable, and more reusable code
+
+## The `Board` struct
+
+```{julia}
+struct Board{T<:Number}
+   grid::Matrix{T} 
+end
+Base.size(b::Board) = size(b.grid)
+Base.getindex(b::Board, ci::CartesianIndex) = b.grid[ci]
+Base.setindex!(b::Board, val, ci::CartesianIndex) = setindex!(b.grid, val, ci)
+Base.eachindex(board::Board) = CartesianIndices(size(board.grid))
+Base.similar(b::Board{T}) where T = Board(zeros(T, size(b)))
+```
+
+```{julia}
+Base.in(i::CartesianIndex, board::Board) = begin 
+    x,y = size(board)
+    i[1] <= x && i[1] > 0 && i[2] > 0 && i[2] <= y
+end
+```
+
+```{julia}
+Board(p = 0.3, sz = (100,100)) = Board(rand(Bernoulli(p), sz))
+```
+
+## The simulation loop
+
+```{julia}
+function simulate(init::Board, numtimesteps=100)
+    timeseries = [similar(init) for _ in 1:numtimesteps]
+    timeseries[begin] = init
+    
+    for t in 2:numtimesteps
+        update!(timeseries[t-1], timeseries[t])
+    end
+    
+    return timeseries
+end
+```
+
+So we're done? No, we need to implement the `update!` function
+
+```{julia}
+function update!(oldboard, newboard)
+    for cellindex in eachindex(oldboard)
+        update!(oldboard, newboard, cellindex)
+    end
+end
+```
+
+and now the `update!` function for each index
+
+```{julia}
+ function update!(oldboard, newboard, cellindex)
+    st = oldboard[cellindex]
+    numneighbors = countneighbors(oldboard, cellindex)
+    newboard[cellindex] = nextstate(st, numneighbors)
+end
+```
+
+Now we need to final functions: `countneighbors` and `nextstate`.
+
+```{julia}
+function countneighbors(board, index)
+    offsets = filter(x->x!=CartesianIndex(0,0), CartesianIndices((-1:1,-1:1)))
+    neighborindices = [index + o for o in offsets]
+    filter!(x-> x ∈ board, neighborindices)
+    return sum(board.grid[neighborindices])
+end
+```
+
+```{julia}
+function nextstate(state, numlivingneighbors)
+    if !state 
+        return numlivingneighbors == 3
+    elseif numlivingneighbors == 2 || numlivingneighbors == 3
+        return true
+    elseif numlivingneighbors < 2 || numlivingneighbors > 3 
+        return false
+    end
+end
+```
+
+```{julia}
+@time simulate(Board(0.1,(50,50)), 100);
+```
+
+```{julia}
+    @time simulate(Board(0.1,(50,50)), 100);
+```
+
+```{julia}
+function animate(timeseries) 
+    pltsettings = (
+    aspectratio=1, 
+    cbar=:none, 
+    frame=:box,
+    c=:binary)
+    return @animate for t in 1:length(timeseries)
+        heatmap(timeseries[t].grid;
+            pltsettings..., 
+            xlim=(1,size(timeseries[begin])[1]),
+            ylim=(1,size(timeseries[begin])[2])
+        )
+    end
+end 
+```
+
+```{julia}
+seq = simulate(Board(0.2,(50,50)), 100);
+gif(animate(seq), fps=10)
+```
+
+## Adding Patterns
+
+```{julia}
+abstract type Pattern end
+Base.size(s::Pattern) = s.sz
+grid(s::Pattern) = s.shape
+```
+
+```{julia}
+struct Glider <: Pattern 
+    sz
+    grid
+end 
+function Glider() 
+    mat =  [false false true;
+            true  false true;
+            false true  true];
+    return Glider(size(mat), mat)
+end
+(g::Glider)() = g.grid
+```
+
+```{julia}
+struct Blinker <: Pattern 
+    sz
+    grid
+end 
+function Blinker()
+    mat = [false true false;
+         false true false;
+         false true false]
+    return Glider(size(mat), mat)
+end
+(b::Blinker)() = b.grid
+```
+
+```{julia}
+struct Pulsar <: Pattern 
+    sz
+    grid
+end 
+(p::Pulsar)() = p.grid
+function Pulsar() 
+    mat =  [0 0 0 0 1 0 0 0 0 0 1 0 0 0 0;
+            0 0 0 0 1 0 0 0 0 0 1 0 0 0 0;
+            0 0 0 0 1 1 0 0 0 1 1 0 0 0 0;
+            0 0 0 0 0 0 0 0 0 0 0 0 0 0 0;
+            1 1 1 0 0 1 1 0 1 1 0 0 1 1 1;
+            0 0 1 0 1 0 1 0 1 0 1 0 1 0 0;
+            0 0 0 0 1 1 0 0 0 1 1 0 0 0 0;
+            0 0 0 0 0 0 0 0 0 0 0 0 0 0 0;
+            0 0 0 0 1 1 0 0 0 1 1 0 0 0 0;
+            0 0 1 0 1 0 1 0 1 0 1 0 1 0 0;
+            1 1 1 0 0 1 1 0 1 1 0 0 1 1 1;
+            0 0 0 0 0 0 0 0 0 0 0 0 0 0 0;
+            0 0 0 0 1 1 0 0 0 1 1 0 0 0 0;
+            0 0 0 0 1 0 0 0 0 0 1 0 0 0 0;
+            0 0 0 0 1 0 0 0 0 0 1 0 0 0 0]
+    return Pulsar(size(mat), mat)
+end 
+```
+
+```{julia}
+# Note: no boundscheck
+```
+
+```{julia}
+function add!(board::Board, shape::T, base::Tuple) where T<:Pattern
+    sz = size(shape)
+    upper = base .+ sz .- 1
+    board.grid[base[1]:upper[1],base[2]:upper[2]] .= shape()
+    board
+end
+```
+
+```{julia}
+add!(Board(), Glider(), (10,10))
+```
+
+```{julia}
+Base.:+(board::Board, s::Shape) = begin
+    add!(board, s)
+    return board
+end 
+```
+
+```{julia}
+board = Board(zeros(Bool, 70,70))
+add!(board, Glider(), (10,10))
+add!(board, Blinker(), (35,50))
+add!(board, Pulsar(), (30,30))
+```
+
+```{julia}
+heatmap(board.grid, c=:binary, aspectratio=1);
+```
+```{julia}
+out = simulate(board, 500);
+```
+
+```{julia}
+gif(animate(out), fps=10)
+```
+
+# DynamicGrids.jl
+
+
+## GOL
+
+```{julia}
+init = rand(Bernoulli(0.3), (100,100));
+```
+
+```{julia}
+@time out = sim!(ArrayOutput(init, tspan=1:100), Life());
+```
+
+```{julia}
+const DEAD, ALIVE, BURNING = 1, 2, 3
+
+neighbors_rule = let prob_combustion=0.0001, prob_regrowth=0.01
+    Neighbors(Moore(1)) do data, neighborhood, cell, I
+        if cell == ALIVE
+            if BURNING in neighborhood
+                BURNING
+            else
+                rand() <= prob_combustion ? BURNING : ALIVE
+            end
+        elseif cell == BURNING
+            DEAD
+        else
+            rand() <= prob_regrowth ? ALIVE : DEAD
+        end
+    end
+end
+```
+
+```{julia}
+init = fill(ALIVE, 200, 200)
+output = ArrayOutput(init; 
+    tspan=1:500, 
+    fps=15, 
+);
+```
+
+```{julia}
+@time sim!(output, neighbors_rule);
+```
+
+```{julia}
+cs = cgrad([:black, :green, :orange]);
+```
+
+```{julia}
+anim = @animate for i in 1:length(output)
+    heatmap(output[i], c=cs, clim=(1,3))
+end 
+```
+
+```{julia}
+gif(anim)
+```
+
+## Adding Wind
+
+
+
